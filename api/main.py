@@ -139,6 +139,16 @@ class ProxyHandler:
 proxy = ProxyHandler(UUID)
 
 # ==========================================
+# HTTP 路由 (用于浏览器访问时的状态提示或伪装)
+# ==========================================
+@app.get("/")
+@app.get("/{path:path}")
+async def health_check():
+    return {
+        "status": "active", 
+        "message": "VLESS over WebSocket is running smoothly."
+    }
+# ==========================================
 # WebSocket 路由接管
 # ==========================================
 @app.websocket("/{path:path}")
