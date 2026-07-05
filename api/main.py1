@@ -1,0 +1,93 @@
+import os
+import struct
+import asyncio
+import logging
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+
+# 初始化环境变量
+UUID = os.environ.get('UUID', 'b831381d-6324-4d53-ad4f-8cda48b30811')
+DEBUG = os.environ.get('DEBUG', 'false').lower() == 'true'
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG if DEBUG else logging.INFO)
+
+# 创建标准的 ASGI 应用
+app = FastAPI()
+
+class ProxyHandler:
+    def __init__(self, uuid: str):
+        self.uuid = uuid
+        self.uuid_bytes = bytes.fromhex(uuid.replace('-', ''))
+
+    async def handle_vless(self, websocket: WebSocket, first_msg: bytes) -> bool:
+        # 【此处完全保留你原有的 VLESS 头部解析逻辑】
+        # (校验版本号、校验 UUID、提取 address_type、解析 host 和 port)
+        # ...
+        
+        # 假设提取到了目标 resolved_host 和 port
+        try:
+            # 建立真正的目标服务器 TCP 连接
+            reader, writer = await asyncio.open_connection(resolved_host, port)
+            
+            # 将多余的有效负载数据写入 TCP 目标端
+            if i < len(first_msg):
+                writer.write(first_msg[i:])
+                await writer.drain()
+
+            # 替换为 FastAPI 的 WebSocket API
+            async def forward_ws_to_tcp():
+                try:
+                    while True:
+                        data = await websocket.receive_bytes()
+                        writer.write(data)
+                        await writer.drain()
+                except Exception:
+                    pass
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+
+            async def forward_tcp_to_ws():
+                try:
+                    while True:
+                        data = await reader.read(4096)
+                        if not data:
+                            break
+                        await websocket.send_bytes(data)
+                except Exception:
+                    pass
+
+            # 并发执行双向转发
+            await asyncio.gather(
+                forward_ws_to_tcp(),
+                forward_tcp_to_ws()
+            )
+            return True
+        except Exception as e:
+            logger.error(f"TCP Connection error: {e}")
+            return False
+
+proxy = ProxyHandler(UUID)
+
+# 使用 FastAPI 接管所有 WebSocket 路由
+@app.websocket("/{path:path}")
+async def websocket_endpoint(websocket: WebSocket, path: str):
+    await websocket.accept()
+    try:
+        # 等待客户端发来的第一个 VLESS 数据包
+        first_msg = await asyncio.wait_for(websocket.receive_bytes(), timeout=5.0)
+        
+        if len(first_msg) > 17 and first_msg[0] == 0:
+            await proxy.handle_vless(websocket, first_msg)
+            
+    except asyncio.TimeoutError:
+        pass
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.error(f"WebSocket execution error: {e}")
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
